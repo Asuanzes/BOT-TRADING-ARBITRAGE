@@ -5,9 +5,10 @@ use btcbot_core::{DecisionConfig, Direction, MarketConfig, MarketSnapshot, Signa
 /// Window duration is enforced by the feed layer and is not part of DecisionConfig.
 pub fn decision_config_for(cfg: &MarketConfig) -> DecisionConfig {
     DecisionConfig {
-        min_price_diff_usd: cfg.min_price_diff_usd,
-        entry_delay_secs:   cfg.entry_delay_secs,
-        min_remaining_secs: cfg.min_remaining_secs,
+        min_price_diff_usd:    cfg.min_price_diff_usd,
+        entry_delay_secs:      cfg.entry_delay_secs,
+        min_remaining_secs:    cfg.min_remaining_secs,
+        max_entry_token_price: cfg.max_entry_token_price,
     }
 }
 
@@ -37,6 +38,12 @@ pub fn evaluate(snapshot: &MarketSnapshot, config: &DecisionConfig) -> Option<Si
         Direction::Down => (snapshot.no_price, confidence(-diff, config.min_price_diff_usd)),
     };
 
+    // Skip entries where the target token is already trading near 1.00:
+    // the remaining upside is too small to justify the downside risk.
+    if token_price > config.max_entry_token_price {
+        return None;
+    }
+
     Some(Signal {
         direction,
         side: direction.to_side(),
@@ -57,6 +64,15 @@ mod tests {
     use btcbot_core::Side;
 
     fn snapshot(reference_price: f64, elapsed_secs: f64) -> MarketSnapshot {
+        snapshot_with_token_prices(reference_price, elapsed_secs, 0.5, 0.5)
+    }
+
+    fn snapshot_with_token_prices(
+        reference_price: f64,
+        elapsed_secs: f64,
+        yes_price: f64,
+        no_price: f64,
+    ) -> MarketSnapshot {
         let window_end_ns = 300_000_000_000i64;
         let now = (elapsed_secs * 1e9) as i64;
         MarketSnapshot {
@@ -64,8 +80,8 @@ mod tests {
             market_id: "test".into(),
             reference_price,
             strike_price: 65_000.0,
-            yes_price: 0.5,
-            no_price: 0.5,
+            yes_price,
+            no_price,
             window_start_ns: 0,
             window_end_ns,
         }
@@ -100,5 +116,28 @@ mod tests {
     fn no_trade_near_window_end() {
         // 260s elapsed → 40s remaining < min_remaining_secs(60)
         assert!(evaluate(&snapshot(65_200.0, 260.0), &DecisionConfig::default()).is_none());
+    }
+
+    #[test]
+    fn no_entry_when_yes_token_already_expensive() {
+        // Up signal (diff +100) but YES quote 0.90 > max_entry_token_price(0.80) → skip.
+        let snap = snapshot_with_token_prices(65_100.0, 60.0, 0.90, 0.10);
+        assert!(evaluate(&snap, &DecisionConfig::default()).is_none());
+    }
+
+    #[test]
+    fn no_entry_when_no_token_already_expensive() {
+        // Down signal (diff -100) but NO quote 0.92 > 0.80 → skip.
+        let snap = snapshot_with_token_prices(64_900.0, 60.0, 0.08, 0.92);
+        assert!(evaluate(&snap, &DecisionConfig::default()).is_none());
+    }
+
+    #[test]
+    fn entry_allowed_when_target_token_still_cheap() {
+        // Up signal, YES still 0.55 → entry allowed.
+        let snap = snapshot_with_token_prices(65_100.0, 60.0, 0.55, 0.45);
+        let sig = evaluate(&snap, &DecisionConfig::default()).unwrap();
+        assert_eq!(sig.direction, Direction::Up);
+        assert_eq!(sig.token_price, 0.55);
     }
 }

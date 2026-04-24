@@ -26,7 +26,13 @@ pub struct MarketConfig {
     pub min_price_diff_usd: f64,
     pub entry_delay_secs:   f64,
     pub min_remaining_secs: f64,
+    /// Reject entry when the target token's quoted price exceeds this value.
+    /// Prevents paying near-1.00 for a token whose remaining upside is tiny.
+    #[serde(default = "default_max_entry_token_price")]
+    pub max_entry_token_price: f64,
 }
+
+fn default_max_entry_token_price() -> f64 { 0.80 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketSnapshot {
@@ -124,6 +130,8 @@ pub struct DecisionConfig {
     pub entry_delay_secs: f64,
     /// Minimum seconds remaining in window to allow entry
     pub min_remaining_secs: f64,
+    /// Reject entry if the target token's quote is above this price.
+    pub max_entry_token_price: f64,
 }
 
 impl Default for DecisionConfig {
@@ -132,6 +140,7 @@ impl Default for DecisionConfig {
             min_price_diff_usd: 50.0,
             entry_delay_secs: 30.0,
             min_remaining_secs: 60.0,
+            max_entry_token_price: 0.80,
         }
     }
 }
