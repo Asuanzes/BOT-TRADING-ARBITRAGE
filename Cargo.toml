@@ -1,0 +1,43 @@
+[package]
+name = "btcbot"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+btcbot-core = { path = "crates/core" }
+decision    = { path = "crates/decision" }
+risk        = { path = "crates/risk" }
+feed        = { path = "crates/feed" }
+tokio              = { workspace = true }
+tracing            = { workspace = true }
+tracing-subscriber = { workspace = true }
+rustls             = { workspace = true }
+
+[workspace]
+resolver = "2"
+members = ["crates/ingest", "crates/core", "crates/decision", "crates/risk", "crates/feed"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["btcbot"]
+
+[workspace.dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time", "sync"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+anyhow = "1"
+url = "2"
+chrono = { version = "0.4", features = ["serde"] }
+flate2 = "1"
+rustls = { version = "0.23", features = ["ring"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

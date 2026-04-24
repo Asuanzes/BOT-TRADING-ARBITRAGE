@@ -1,0 +1,23 @@
+[package]
+name = "ingest"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "ingest"
+path = "src/main.rs"
+
+[dependencies]
+tokio = { workspace = true }
+tokio-tungstenite = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+anyhow = { workspace = true }
+url = { workspace = true }
+chrono = { workspace = true }
+flate2 = { workspace = true }
+rustls = { workspace = true }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }

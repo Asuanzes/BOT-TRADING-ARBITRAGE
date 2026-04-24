@@ -1,0 +1,12 @@
+[package]
+name = "feed"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+btcbot-core = { path = "../core" }
+tokio       = { workspace = true }
+tracing     = { workspace = true }
+serde_json  = { workspace = true }
+chrono      = { workspace = true }
+reqwest     = { workspace = true }

@@ -1,0 +1,7 @@
+[package]
+name = "decision"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+btcbot-core = { path = "../core" }
