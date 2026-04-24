@@ -1,41 +1,12 @@
 mod config;
 
-use btcbot_core::{MarketSnapshot, Position, RunMode, Side, Signal};
+use btcbot_core::{MarketSnapshot, Position, Side};
 use risk::{CloseReason, RiskConfig};
 use std::collections::HashMap;
 use std::path::Path;
 use tokio::sync::mpsc;
 
 const SIZE_USDC: f64 = 10.0;
-
-/// Entry-order dispatch — the only function that needs to change when moving to live.
-/// Simulation: logs the signal; no exchange call is made.
-/// Live: TODO — call execution::place_entry_order(market_id, sig, size_usdc).await
-fn execute_entry(mode: &RunMode, market_id: &str, sig: &Signal, size_usdc: f64) {
-    match mode {
-        RunMode::Simulation => tracing::info!(
-            "[SIM|ENTRY] market={market_id} direction={:?} side={:?} \
-             price={:.4} size={size_usdc:.0}$ confidence={:.2}",
-            sig.direction, sig.side, sig.token_price, sig.confidence,
-        ),
-        RunMode::Live => {
-            tracing::warn!("[LIVE|ENTRY] execution not yet implemented — no order sent");
-        }
-    }
-}
-
-/// Close-order dispatch — mirrors execute_entry for the exit side.
-/// Live: TODO — call execution::place_close_order(market_id).await
-fn execute_close(mode: &RunMode, market_id: &str, reason: CloseReason, pnl_pct: f64) {
-    match mode {
-        RunMode::Simulation => tracing::info!(
-            "[SIM|CLOSE] market={market_id} reason={reason:?} pnl={pnl_pct:+.1}%",
-        ),
-        RunMode::Live => {
-            tracing::warn!("[LIVE|CLOSE] execution not yet implemented — position not closed on exchange");
-        }
-    }
-}
 
 #[tokio::main]
 async fn main() {
@@ -85,18 +56,33 @@ async fn main() {
         match positions.remove(&mid) {
             None => {
                 if let Some(sig) = decision::evaluate(&snap, &dcfg) {
-                    execute_entry(&mode, &mid, &sig, SIZE_USDC);
-                    // Position is tracked locally in both modes for P&L accounting.
-                    positions.insert(mid, PositionState {
-                        position: Position {
-                            market_id:     snap.market_id.clone(),
-                            side:          sig.side,
-                            entry_price:   sig.token_price,
-                            size_usdc:     SIZE_USDC,
-                            entry_time_ns: snap.timestamp_ns,
-                        },
-                        peak_pnl_pct: 0.0,
-                    });
+                    // Entry goes through the execution layer. In Simulation the fill is
+                    // synthetic (at sig.token_price); in Live this will hit the CLOB.
+                    match execution::place_entry_order(
+                        &mode, &mid, sig.side, SIZE_USDC, sig.token_price,
+                    ).await {
+                        Ok(fill) => {
+                            tracing::info!(
+                                "[ENTRY|{:?}] market={mid} dir={:?} side={:?} \
+                                 fill={:.4} size={:.2}$ conf={:.2}",
+                                mode, sig.direction, sig.side,
+                                fill.token_price, fill.size_usdc, sig.confidence,
+                            );
+                            positions.insert(mid, PositionState {
+                                position: Position {
+                                    market_id:     snap.market_id.clone(),
+                                    side:          sig.side,
+                                    // Use the actual fill price, not the quoted one —
+                                    // slippage lives here when the live path is wired.
+                                    entry_price:   fill.token_price,
+                                    size_usdc:     fill.size_usdc,
+                                    entry_time_ns: snap.timestamp_ns,
+                                },
+                                peak_pnl_pct: 0.0,
+                            });
+                        }
+                        Err(e) => tracing::warn!("entry rejected on {mid}: {e}"),
+                    }
                 }
             }
             Some(mut state) => {
@@ -117,7 +103,27 @@ async fn main() {
                     &rcfg,
                 ) {
                     CloseReason::Hold => { positions.insert(mid, state); }
-                    reason => execute_close(&mode, &mid, reason, pnl * 100.0),
+                    reason => {
+                        // Token amount to unwind = size_usdc / entry_price.
+                        // (Holds as long as size_usdc reflects the notional actually filled.)
+                        let size_tokens = state.position.size_usdc / state.position.entry_price;
+                        match execution::place_close_order(
+                            &mode, &mid, state.position.side, size_tokens, cur,
+                        ).await {
+                            Ok(fill) => tracing::info!(
+                                "[CLOSE|{:?}] market={mid} reason={reason:?} \
+                                 fill={:.4} pnl={:+.1}%",
+                                mode, fill.token_price, pnl * 100.0,
+                            ),
+                            Err(e) => {
+                                // Keep tracking the position so the next snapshot retries.
+                                tracing::error!(
+                                    "close failed on {mid} ({reason:?}): {e} — will retry next tick"
+                                );
+                                positions.insert(mid, state);
+                            }
+                        }
+                    }
                 }
             }
         }

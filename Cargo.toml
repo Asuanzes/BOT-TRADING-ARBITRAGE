@@ -8,6 +8,7 @@ btcbot-core = { path = "crates/core" }
 decision    = { path = "crates/decision" }
 risk        = { path = "crates/risk" }
 feed        = { path = "crates/feed" }
+execution   = { path = "crates/execution" }
 tokio              = { workspace = true }
 tracing            = { workspace = true }
 tracing-subscriber = { workspace = true }
@@ -17,7 +18,7 @@ toml               = "0.8"
 
 [workspace]
 resolver = "2"
-members = ["crates/ingest", "crates/core", "crates/decision", "crates/risk", "crates/feed"]
+members = ["crates/ingest", "crates/core", "crates/decision", "crates/risk", "crates/feed", "crates/execution"]
 
 [workspace.package]
 version = "0.1.0"
