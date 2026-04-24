@@ -10,6 +10,9 @@ pub struct RiskConfig {
     pub trail_giveback_pct: f64,
     /// Close if the underlying reverses past this USD diff against the position's direction.
     pub reversal_diff_usd: f64,
+    /// Disable the fixed take-profit when the underlying is this far in our favor.
+    /// In that regime we only exit via trailing, reversal, or timeout — letting winners run.
+    pub let_run_diff_usd: f64,
 }
 
 impl Default for RiskConfig {
@@ -20,6 +23,7 @@ impl Default for RiskConfig {
             trail_arm_pct: 0.30,
             trail_giveback_pct: 0.60,
             reversal_diff_usd: 40.0,
+            let_run_diff_usd: 150.0,
         }
     }
 }
@@ -42,7 +46,7 @@ pub enum CloseReason {
 /// Order of checks is load-bearing:
 ///   1. Timeout — always wins at window end.
 ///   2. Reversal — cut quickly when the underlying turns against us, before the token quote catches up.
-///   3. Take-profit — lock in a clean win.
+///   3. Take-profit — lock in a clean win, UNLESS we are in "let run" mode (diff far in our favor).
 ///   4. Trailing stop — only possible once armed (peak ≥ trail_arm_pct).
 ///   5. Stop-loss — last resort on token-quote drawdown.
 pub fn should_close(
@@ -65,8 +69,15 @@ pub fn should_close(
         return CloseReason::Reversal;
     }
 
+    // "Let winners run": when the underlying is strongly in our favor, skip the fixed TP
+    // and rely on trailing/reversal/timeout to capture further upside.
+    let running_in_favor = match position.side {
+        Side::Yes => underlying_diff_usd >  config.let_run_diff_usd,
+        Side::No  => underlying_diff_usd < -config.let_run_diff_usd,
+    };
+
     let pnl = position.pnl_pct(current_price);
-    if pnl >= config.take_profit_pct {
+    if !running_in_favor && pnl >= config.take_profit_pct {
         return CloseReason::TakeProfit;
     }
 
@@ -205,6 +216,51 @@ mod tests {
         assert_eq!(
             should_close(&p, 0.62, 120.0, 0.0, 0.55, &RiskConfig::default()),
             CloseReason::TakeProfit
+        );
+    }
+
+    #[test]
+    fn let_run_skips_fixed_tp_when_diff_strongly_in_favor() {
+        // Side::Yes, diff = +200 > let_run_diff_usd(150) and pnl 0.55 ≥ TP:
+        // must NOT close via TakeProfit — hold to let the winner run.
+        // Peak 0.55 < trail_arm? default arm=0.30, so trailing is armed, but pnl == peak
+        // → giveback threshold = 0.33; pnl 0.55 > 0.33 → no trailing either → Hold.
+        let p = position_with_side(0.40, Side::Yes);
+        assert_eq!(
+            should_close(&p, 0.62, 120.0, 200.0, 0.55, &RiskConfig::default()),
+            CloseReason::Hold
+        );
+    }
+
+    #[test]
+    fn let_run_still_closes_on_trailing_giveback() {
+        // In let-run mode but peak 0.80 and pnl back to 0.40:
+        // giveback threshold = 0.80*0.60 = 0.48; pnl 0.40 ≤ 0.48 → TrailingStop.
+        let p = position_with_side(0.40, Side::Yes);
+        assert_eq!(
+            should_close(&p, 0.56, 120.0, 200.0, 0.80, &RiskConfig::default()),
+            CloseReason::TrailingStop
+        );
+    }
+
+    #[test]
+    fn let_run_still_closes_on_reversal() {
+        // Let-run would require diff > +150, but reversal fires first when diff < -40.
+        // Guarantees reversal check precedes let-run logic.
+        let p = position_with_side(0.40, Side::Yes);
+        assert_eq!(
+            should_close(&p, 0.62, 120.0, -60.0, 0.55, &RiskConfig::default()),
+            CloseReason::Reversal
+        );
+    }
+
+    #[test]
+    fn let_run_symmetric_for_no_side() {
+        // Side::No with diff = -200 (strongly down → in favor for No): skip TP.
+        let p = position_with_side(0.40, Side::No);
+        assert_eq!(
+            should_close(&p, 0.62, 120.0, -200.0, 0.55, &RiskConfig::default()),
+            CloseReason::Hold
         );
     }
 }
