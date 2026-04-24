@@ -38,6 +38,9 @@ struct WindowState {
     window_start_ns: i64,
     window_end_ns:   i64,
     start_price: f64,   // BTC price at window open (beat/reference price)
+    /// Previous underlying sample for instantaneous momentum calc. 0.0 = no prior sample yet.
+    last_ref_price:  f64,
+    last_ref_ts_ns:  i64,
 }
 
 async fn feed_loop(tx: mpsc::Sender<MarketSnapshot>) {
@@ -86,6 +89,18 @@ async fn feed_loop(tx: mpsc::Sender<MarketSnapshot>) {
         );
 
         let now_ns = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+
+        // Instantaneous momentum from the last sample. Zero for the first tick
+        // of a window (or whenever the previous sample was skipped).
+        let momentum_usd_per_sec = if s.last_ref_price > 0.0 && s.last_ref_ts_ns > 0 {
+            let dt_secs = (now_ns - s.last_ref_ts_ns) as f64 / 1e9;
+            if dt_secs > 0.0 { (btc - s.last_ref_price) / dt_secs } else { 0.0 }
+        } else {
+            0.0
+        };
+        s.last_ref_price = btc;
+        s.last_ref_ts_ns = now_ns;
+
         // market_id = Polymarket condition ID (needed for order placement).
         // Logical name for this feed is BTC_5M_UPDOWN (btcbot_core::BTC_5M_UPDOWN).
         // strike_price = BTC price at window_start; reference_price = current BTC spot.
@@ -98,9 +113,10 @@ async fn feed_loop(tx: mpsc::Sender<MarketSnapshot>) {
             no_price:        buy_down,
             window_start_ns: s.window_start_ns,
             window_end_ns:   s.window_end_ns,
+            momentum_usd_per_sec,
         };
 
-        info!("feed: btc={btc:.0} beat={:.0} diff={:+.0} up_buy={buy_up:.4} down_buy={buy_down:.4} | {}s left",
+        info!("feed: btc={btc:.0} beat={:.0} diff={:+.0} mom={momentum_usd_per_sec:+.2}$/s up_buy={buy_up:.4} down_buy={buy_down:.4} | {}s left",
             s.start_price, btc - s.start_price,
             (s.window_end_ns - now_ns) / 1_000_000_000);
 
@@ -136,8 +152,11 @@ async fn fetch_window(client: &reqwest::Client, slug: &str) -> Option<WindowStat
     // Fetch initial BTC price as beat price
     let start_price = btc_price(client).await.unwrap_or(0.0);
 
-    Some(WindowState { slug: slug.to_string(), condition_id, token_up, token_down,
-        window_start_ns: start_ns, window_end_ns: end_ns, start_price })
+    Some(WindowState {
+        slug: slug.to_string(), condition_id, token_up, token_down,
+        window_start_ns: start_ns, window_end_ns: end_ns, start_price,
+        last_ref_price: 0.0, last_ref_ts_ns: 0,
+    })
 }
 
 async fn btc_price(client: &reqwest::Client) -> Option<f64> {

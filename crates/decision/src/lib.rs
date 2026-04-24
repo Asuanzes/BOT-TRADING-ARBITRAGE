@@ -5,10 +5,11 @@ use btcbot_core::{DecisionConfig, Direction, MarketConfig, MarketSnapshot, Signa
 /// Window duration is enforced by the feed layer and is not part of DecisionConfig.
 pub fn decision_config_for(cfg: &MarketConfig) -> DecisionConfig {
     DecisionConfig {
-        min_price_diff_usd:    cfg.min_price_diff_usd,
-        entry_delay_secs:      cfg.entry_delay_secs,
-        min_remaining_secs:    cfg.min_remaining_secs,
-        max_entry_token_price: cfg.max_entry_token_price,
+        min_price_diff_usd:          cfg.min_price_diff_usd,
+        entry_delay_secs:            cfg.entry_delay_secs,
+        min_remaining_secs:          cfg.min_remaining_secs,
+        max_entry_token_price:       cfg.max_entry_token_price,
+        momentum_reject_usd_per_sec: cfg.momentum_reject_usd_per_sec,
     }
 }
 
@@ -32,6 +33,16 @@ pub fn evaluate(snapshot: &MarketSnapshot, config: &DecisionConfig) -> Option<Si
     } else {
         return None;
     };
+
+    // Momentum filter: skip when the underlying is actively moving against the
+    // diff-derived direction. Prevents entering right after a spike that's reverting.
+    if config.momentum_reject_usd_per_sec > 0.0 {
+        let contradicts = match direction {
+            Direction::Up   => snapshot.momentum_usd_per_sec <= -config.momentum_reject_usd_per_sec,
+            Direction::Down => snapshot.momentum_usd_per_sec >=  config.momentum_reject_usd_per_sec,
+        };
+        if contradicts { return None; }
+    }
 
     let (token_price, confidence) = match direction {
         Direction::Up => (snapshot.yes_price, confidence(diff, config.min_price_diff_usd)),
@@ -64,7 +75,7 @@ mod tests {
     use btcbot_core::Side;
 
     fn snapshot(reference_price: f64, elapsed_secs: f64) -> MarketSnapshot {
-        snapshot_with_token_prices(reference_price, elapsed_secs, 0.5, 0.5)
+        snapshot_full(reference_price, elapsed_secs, 0.5, 0.5, 0.0)
     }
 
     fn snapshot_with_token_prices(
@@ -72,6 +83,16 @@ mod tests {
         elapsed_secs: f64,
         yes_price: f64,
         no_price: f64,
+    ) -> MarketSnapshot {
+        snapshot_full(reference_price, elapsed_secs, yes_price, no_price, 0.0)
+    }
+
+    fn snapshot_full(
+        reference_price: f64,
+        elapsed_secs: f64,
+        yes_price: f64,
+        no_price: f64,
+        momentum_usd_per_sec: f64,
     ) -> MarketSnapshot {
         let window_end_ns = 300_000_000_000i64;
         let now = (elapsed_secs * 1e9) as i64;
@@ -84,6 +105,7 @@ mod tests {
             no_price,
             window_start_ns: 0,
             window_end_ns,
+            momentum_usd_per_sec,
         }
     }
 
@@ -139,5 +161,42 @@ mod tests {
         let sig = evaluate(&snap, &DecisionConfig::default()).unwrap();
         assert_eq!(sig.direction, Direction::Up);
         assert_eq!(sig.token_price, 0.55);
+    }
+
+    #[test]
+    fn momentum_against_up_direction_rejects_entry() {
+        // Diff +100 → Up; but underlying falling at -3 USD/s (> 2.0 threshold) → skip.
+        let snap = snapshot_full(65_100.0, 60.0, 0.55, 0.45, -3.0);
+        assert!(evaluate(&snap, &DecisionConfig::default()).is_none());
+    }
+
+    #[test]
+    fn momentum_against_down_direction_rejects_entry() {
+        // Diff -100 → Down; but underlying rising at +3 USD/s → skip.
+        let snap = snapshot_full(64_900.0, 60.0, 0.45, 0.55, 3.0);
+        assert!(evaluate(&snap, &DecisionConfig::default()).is_none());
+    }
+
+    #[test]
+    fn momentum_in_favor_allows_entry() {
+        // Up signal and momentum +5 USD/s → pass through.
+        let snap = snapshot_full(65_100.0, 60.0, 0.55, 0.45, 5.0);
+        let sig = evaluate(&snap, &DecisionConfig::default()).unwrap();
+        assert_eq!(sig.direction, Direction::Up);
+    }
+
+    #[test]
+    fn momentum_below_threshold_does_not_reject() {
+        // Up signal, momentum -1.0 USD/s — below |2.0| threshold → not a veto.
+        let snap = snapshot_full(65_100.0, 60.0, 0.55, 0.45, -1.0);
+        assert!(evaluate(&snap, &DecisionConfig::default()).is_some());
+    }
+
+    #[test]
+    fn momentum_filter_disabled_when_threshold_zero() {
+        // Strong contradicting momentum but threshold = 0 disables the check.
+        let snap = snapshot_full(65_100.0, 60.0, 0.55, 0.45, -50.0);
+        let cfg = DecisionConfig { momentum_reject_usd_per_sec: 0.0, ..DecisionConfig::default() };
+        assert!(evaluate(&snap, &cfg).is_some());
     }
 }

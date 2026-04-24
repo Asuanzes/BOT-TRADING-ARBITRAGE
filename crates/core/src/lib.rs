@@ -30,9 +30,14 @@ pub struct MarketConfig {
     /// Prevents paying near-1.00 for a token whose remaining upside is tiny.
     #[serde(default = "default_max_entry_token_price")]
     pub max_entry_token_price: f64,
+    /// Reject entry when the underlying's velocity contradicts the diff-derived direction
+    /// by at least this magnitude (USD/s). 0 disables the check.
+    #[serde(default = "default_momentum_reject_usd_per_sec")]
+    pub momentum_reject_usd_per_sec: f64,
 }
 
 fn default_max_entry_token_price() -> f64 { 0.80 }
+fn default_momentum_reject_usd_per_sec() -> f64 { 2.0 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketSnapshot {
@@ -46,6 +51,10 @@ pub struct MarketSnapshot {
     pub no_price: f64,
     pub window_start_ns: i64,
     pub window_end_ns: i64,
+    /// Instantaneous velocity of the underlying in USD/s (reference_price − previous) / dt.
+    /// 0.0 when no previous sample is available (first tick of a window).
+    #[serde(default)]
+    pub momentum_usd_per_sec: f64,
 }
 
 impl MarketSnapshot {
@@ -132,6 +141,9 @@ pub struct DecisionConfig {
     pub min_remaining_secs: f64,
     /// Reject entry if the target token's quote is above this price.
     pub max_entry_token_price: f64,
+    /// Reject entry if underlying momentum (USD/s) goes against the direction
+    /// by at least this magnitude. 0 disables the check.
+    pub momentum_reject_usd_per_sec: f64,
 }
 
 impl Default for DecisionConfig {
@@ -141,6 +153,7 @@ impl Default for DecisionConfig {
             entry_delay_secs: 30.0,
             min_remaining_secs: 60.0,
             max_entry_token_price: 0.80,
+            momentum_reject_usd_per_sec: 2.0,
         }
     }
 }
