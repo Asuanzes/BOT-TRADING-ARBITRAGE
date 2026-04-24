@@ -55,9 +55,13 @@ async fn feed_loop(tx: mpsc::Sender<MarketSnapshot>) {
     loop {
         tick.tick().await;
 
+        // Slug timestamp is the window START. Ask for the currently active window
+        // (floor to 5-min boundary), not the next one — Polymarket only publishes
+        // markets close to their start time, and the active window is the one we
+        // can trade right now.
         let now_s = Utc::now().timestamp();
-        let end_ts = (now_s / 300 + 1) * 300;
-        let slug   = format!("btc-updown-5m-{end_ts}");
+        let window_start_ts = (now_s / 300) * 300;
+        let slug = format!("btc-updown-5m-{window_start_ts}");
 
         // Fetch market when slug changes (new window)
         if state.as_ref().map(|s| &s.slug) != Some(&slug) {
@@ -139,9 +143,12 @@ async fn fetch_window(client: &reqwest::Client, slug: &str) -> Option<WindowStat
     let token_up   = ids.get(0)?.as_str()?.to_string();
     let token_down = ids.get(1)?.as_str()?.to_string();
 
-    // window_start_ns = market open (startDate); window_end_ns = resolution time (endDate).
-    // Both come from Polymarket's Gamma API and must span exactly WINDOW_NS (300 s).
-    let start_ns = parse_ts(m.get("startDate").and_then(|d| d.as_str()).unwrap_or(""))?;
+    // window_start comes from the slug's trailing unix ts — NOT from Polymarket's
+    // `startDate` field, which is the market CREATION time (often hours or a day
+    // before the trading window). `endDate` is the resolution time (window end).
+    let start_ts_secs: i64 = slug.rsplit_once('-')
+        .and_then(|(_, ts)| ts.parse().ok())?;
+    let start_ns = start_ts_secs * 1_000_000_000;
     let end_ns   = parse_ts(m.get("endDate").and_then(|d| d.as_str()).unwrap_or(""))?;
     if end_ns - start_ns != WINDOW_NS {
         warn!("feed: {slug} window is {}s, expected 300s — skipping",
