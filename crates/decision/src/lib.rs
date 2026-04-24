@@ -1,7 +1,19 @@
-use btcbot_core::{DecisionConfig, Direction, MarketSnapshot, Signal};
+use btcbot_core::{DecisionConfig, Direction, MarketConfig, MarketSnapshot, Signal};
 
-/// Strategy v1: trade if reference_price deviates from strike by min_price_diff_usd.
-/// Returns None if conditions are not met (timing or diff too small).
+/// Builds a DecisionConfig from any MarketConfig entry.
+/// This module is market-agnostic: the same thresholds apply to any binary up/down market.
+/// Window duration is enforced by the feed layer and is not part of DecisionConfig.
+pub fn decision_config_for(cfg: &MarketConfig) -> DecisionConfig {
+    DecisionConfig {
+        min_price_diff_usd: cfg.min_price_diff_usd,
+        entry_delay_secs:   cfg.entry_delay_secs,
+        min_remaining_secs: cfg.min_remaining_secs,
+    }
+}
+
+/// Evaluates a snapshot against the given thresholds.
+/// Market-agnostic: works for any binary up/down market whose snapshot is correctly populated.
+/// Returns None if timing or price-diff conditions are not met.
 pub fn evaluate(snapshot: &MarketSnapshot, config: &DecisionConfig) -> Option<Signal> {
     if snapshot.elapsed_secs() < config.entry_delay_secs {
         return None;

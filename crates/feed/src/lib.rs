@@ -1,4 +1,4 @@
-use btcbot_core::MarketSnapshot;
+use btcbot_core::{MarketConfig, MarketSnapshot};
 use chrono::Utc;
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration};
@@ -9,8 +9,25 @@ const CLOB: &str  = "https://clob.polymarket.com";
 const BINANCE: &str = "https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT";
 const POLL_SECS: u64 = 3;
 
-pub fn spawn(tx: mpsc::Sender<MarketSnapshot>) {
-    tokio::spawn(async move { feed_loop(tx).await });
+// BTC_5M_UPDOWN window: the active Polymarket slot always spans exactly 300 s.
+// window_start_ns = market open (UTC, unix ns); window_end_ns = resolution time.
+// The market resolves YES if BTC at window_end > strike_price (BTC at window_start), NO otherwise.
+// To add other market types, spawn a separate feed task with its own fetch_window variant.
+const WINDOW_NS: i64 = 300 * 1_000_000_000;
+
+/// Spawns a polling task for the given market configuration.
+/// Here is where each additional market symbol gets its own feed loop.
+/// To add ETH_5M_UPDOWN (or any other market):
+///   1. Add a match arm for its id below.
+///   2. Write a `feed_loop_eth` (or generic parameterized version) that uses
+///      the correct Polymarket slug prefix and price-source URL from `cfg.symbol`.
+pub fn spawn_for_market(cfg: &MarketConfig, tx: mpsc::Sender<MarketSnapshot>) {
+    match cfg.id.as_str() {
+        btcbot_core::BTC_5M_UPDOWN => {
+            tokio::spawn(async move { feed_loop(tx).await });
+        }
+        other => warn!("feed: no implementation for market '{other}' — skipping"),
+    }
 }
 
 struct WindowState {
@@ -69,6 +86,9 @@ async fn feed_loop(tx: mpsc::Sender<MarketSnapshot>) {
         );
 
         let now_ns = Utc::now().timestamp_nanos_opt().unwrap_or(0);
+        // market_id = Polymarket condition ID (needed for order placement).
+        // Logical name for this feed is BTC_5M_UPDOWN (btcbot_core::BTC_5M_UPDOWN).
+        // strike_price = BTC price at window_start; reference_price = current BTC spot.
         let snap = MarketSnapshot {
             timestamp_ns:    now_ns,
             market_id:       s.condition_id.clone(),
@@ -103,9 +123,15 @@ async fn fetch_window(client: &reqwest::Client, slug: &str) -> Option<WindowStat
     let token_up   = ids.get(0)?.as_str()?.to_string();
     let token_down = ids.get(1)?.as_str()?.to_string();
 
-    // startDate is window start; endDate is window end
+    // window_start_ns = market open (startDate); window_end_ns = resolution time (endDate).
+    // Both come from Polymarket's Gamma API and must span exactly WINDOW_NS (300 s).
     let start_ns = parse_ts(m.get("startDate").and_then(|d| d.as_str()).unwrap_or(""))?;
     let end_ns   = parse_ts(m.get("endDate").and_then(|d| d.as_str()).unwrap_or(""))?;
+    if end_ns - start_ns != WINDOW_NS {
+        warn!("feed: {slug} window is {}s, expected 300s — skipping",
+            (end_ns - start_ns) / 1_000_000_000);
+        return None;
+    }
 
     // Fetch initial BTC price as beat price
     let start_price = btc_price(client).await.unwrap_or(0.0);

@@ -1,5 +1,33 @@
 use serde::{Deserialize, Serialize};
 
+pub const BTC_5M_UPDOWN: &str = "BTC_5M_UPDOWN";
+
+/// Bot execution mode. Set via `mode` in config/markets.toml.
+/// Simulation: no orders are sent; all activity is logged only.
+/// Live: orders are submitted to Polymarket (execution layer required).
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RunMode {
+    Simulation,
+    Live,
+}
+
+/// Configuration for one market loaded from config/markets.toml.
+/// `window_secs` and `symbol` are stored for documentation and future use
+/// (e.g. multi-market routing, feed validation); decision logic only uses
+/// the three threshold fields below.
+/// To add a second market, append another [[markets]] block to the TOML file
+/// and spawn a dedicated feed + decision task keyed on `id`.
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct MarketConfig {
+    pub id:                 String,
+    pub symbol:             String,
+    pub window_secs:        u64,
+    pub min_price_diff_usd: f64,
+    pub entry_delay_secs:   f64,
+    pub min_remaining_secs: f64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketSnapshot {
     pub timestamp_ns: i64,

@@ -1,0 +1,33 @@
+# Bot configuration for btcbot.
+#
+# mode: "simulation" — log signals only, no orders sent.
+#       "live"       — submit real orders via Polymarket CLOB (execution layer required).
+mode = "simulation"
+
+# Each [[markets]] entry maps to a Polymarket binary market tracked by the bot.
+# Only the entry whose id matches BTC_5M_UPDOWN is used today.
+#
+# To add a future market:
+#   1. Append another [[markets]] block below with a unique `id`.
+#   2. Spawn a dedicated feed task and decision task in main.rs, keyed on that id.
+#   3. No code changes needed in the config layer itself.
+
+[[markets]]
+id                 = "BTC_5M_UPDOWN"
+symbol             = "BTCUSDT"
+window_secs        = 300
+min_price_diff_usd = 50.0   # enter only if BTC moved >$50 from the strike price
+entry_delay_secs   = 30.0   # skip the first 30 s of each window
+min_remaining_secs = 60.0   # do not enter with less than 60 s until resolution
+
+# To add ETH_5M_UPDOWN: uncomment, define "ETH_5M_UPDOWN" in btcbot_core, and extend
+# feed::spawn_for_market with an ETH feed loop (slug prefix "eth-updown-5m-", ETHUSDT price).
+# The decision loop in main.rs needs no changes — it is already market-agnostic.
+#
+# [[markets]]
+# id                 = "ETH_5M_UPDOWN"
+# symbol             = "ETHUSDT"
+# window_secs        = 300
+# min_price_diff_usd = 3.0    # ETH moves less in USD; tune threshold accordingly
+# entry_delay_secs   = 30.0
+# min_remaining_secs = 60.0
