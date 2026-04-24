@@ -72,7 +72,13 @@ async fn main() {
 
     // The positions map and the snapshot loop below are already market-agnostic:
     // they key everything on snapshot.market_id and handle N concurrent open positions.
-    let mut positions: HashMap<String, Position> = HashMap::new();
+    // peak_pnl_pct is a high-water mark tracked locally (not persisted on Position)
+    // so the shared core type stays a pure position record.
+    struct PositionState {
+        position:     Position,
+        peak_pnl_pct: f64,
+    }
+    let mut positions: HashMap<String, PositionState> = HashMap::new();
 
     while let Some(snap) = rx.recv().await {
         let mid = snap.market_id.clone();
@@ -81,23 +87,37 @@ async fn main() {
                 if let Some(sig) = decision::evaluate(&snap, &dcfg) {
                     execute_entry(&mode, &mid, &sig, SIZE_USDC);
                     // Position is tracked locally in both modes for P&L accounting.
-                    positions.insert(mid, Position {
-                        market_id:     snap.market_id.clone(),
-                        side:          sig.side,
-                        entry_price:   sig.token_price,
-                        size_usdc:     SIZE_USDC,
-                        entry_time_ns: snap.timestamp_ns,
+                    positions.insert(mid, PositionState {
+                        position: Position {
+                            market_id:     snap.market_id.clone(),
+                            side:          sig.side,
+                            entry_price:   sig.token_price,
+                            size_usdc:     SIZE_USDC,
+                            entry_time_ns: snap.timestamp_ns,
+                        },
+                        peak_pnl_pct: 0.0,
                     });
                 }
             }
-            Some(pos) => {
-                let cur = match pos.side {
+            Some(mut state) => {
+                let cur = match state.position.side {
                     Side::Yes => snap.yes_price,
                     Side::No  => snap.no_price,
                 };
-                match risk::should_close(&pos, cur, snap.remaining_secs(), &rcfg) {
-                    CloseReason::Hold => { positions.insert(mid, pos); }
-                    reason => execute_close(&mode, &mid, reason, pos.pnl_pct(cur) * 100.0),
+                let pnl = state.position.pnl_pct(cur);
+                if pnl > state.peak_pnl_pct { state.peak_pnl_pct = pnl; }
+                let underlying_diff = snap.reference_price - snap.strike_price;
+
+                match risk::should_close(
+                    &state.position,
+                    cur,
+                    snap.remaining_secs(),
+                    underlying_diff,
+                    state.peak_pnl_pct,
+                    &rcfg,
+                ) {
+                    CloseReason::Hold => { positions.insert(mid, state); }
+                    reason => execute_close(&mode, &mid, reason, pnl * 100.0),
                 }
             }
         }
