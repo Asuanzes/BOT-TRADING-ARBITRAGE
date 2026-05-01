@@ -1,12 +1,22 @@
 use btcbot_core::{MarketConfig, RunMode};
+use risk::RiskConfig;
 use std::path::Path;
 
 /// Top-level structure that mirrors the full config/markets.toml file.
 #[derive(Debug, serde::Deserialize)]
 pub struct BotConfig {
     pub mode:    RunMode,
+    #[serde(default = "default_simulated_balance")]
+    pub simulated_balance_usdc: f64,
+    #[serde(default = "default_entry_size")]
+    pub entry_size_usdc: f64,
     pub markets: Vec<MarketConfig>,
+    #[serde(default, rename = "risk")]
+    pub risk: RiskConfig,
 }
+
+fn default_simulated_balance() -> f64 { 3000.0 }
+fn default_entry_size() -> f64 { 150.0 }
 
 /// Loads the full bot config from a TOML file.
 /// Panics at startup if the file is missing or malformed — fail-fast is

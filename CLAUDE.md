@@ -1,75 +1,87 @@
-# btcbot (Rust, VPS Hetzner)
+# CLAUDE.md
 
-## Stack y propósito
-- Lenguaje: Rust con Cargo workspace.
-- Proyecto: bot de trading automatizado.
-- Fuentes de datos actuales:
-  - Binance
-  - Coinalyze
-  - Deribit
-  - Polymarket
-- Objetivo: automatizar trading en Polymarket en mercados de corta duración (p.ej. 5 minutos),
-  tomando decisiones sobre:
-  - Si apostar a up/down respecto al precio de referencia.
-  - Tipo de orden (market vs limit; de momento preferir una sola opción simple).
-  - Momento de entrada dentro de la ventana de 5 minutos.
-  - Cuándo recoger ganancias o cortar pérdidas en función de la evolución del precio.
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Estado del proyecto
-- El bot ya está corriendo en el servidor y lleva bastantes horas de ejecución.
-- La autenticación (API keys) aún no está completamente configurada; esto se hará más adelante.
-- Falta estructurar la lógica de decisión de trading y desarrollarla de forma robusta.
+## Commands
 
-## Estructura general esperada
-- `Cargo.toml` (raíz): define el workspace de Rust.
-- `src/`: coordinación de alto nivel (entrypoint del bot, orquestación general).
-- `crates/ingest/`: ingesta de datos (lectura de datos de exchanges / mercados).
-- Otros crates o módulos podrán añadirse para:
-  - Lógica de decisión (estrategias).
-  - Gestión de riesgo y tamaño de posición.
-  - Integración específica con Polymarket (órdenes, gestión de posiciones).
+```bash
+# Rust bot
+cargo build --release                  # build binary → target/release/btcbot
+cargo test                             # all workspace tests
+cargo test -p btcbot-decision          # single crate (replace with any crate name)
+./target/release/btcbot                # run bot (reads config/markets.toml)
+systemctl restart btcbot               # restart systemd service
+journalctl -u btcbot -f                # stream service logs
 
-## Comandos habituales en este servidor
-- `cargo build --release` — Compilar para producción.
-- `cargo test` — Ejecutar tests.
-- `./target/release/btcbot` — Ejecutar binario manualmente (solo si procede).
-- `systemctl restart btcbot` — Reiniciar servicio del bot (si existe unidad systemd).
-- `journalctl -u btcbot -f` — Ver logs del servicio en tiempo real (si hay servicio).
+# Solidity contracts
+cd contracts && forge build
+cd contracts && forge test
 
-## Reglas importantes para Claude Code (token y seguridad)
-- Usa **comandos de shell primero** (`ls`, `tree`, `rg`, `grep`, `cargo`) para entender el proyecto
-  antes de leer archivos grandes.
-- No abras archivos de más de ~500 líneas sin pedírmelo explícitamente.
-- Prioriza trabajar con:
-  - `src/`
-  - `crates/ingest/src/`
-  y otros módulos que yo te indique, en lugar de leer todo el repo.
-- Nunca muestres ni copies API keys, tokens o credenciales desde `.env`, `config/` u otros archivos
-  de configuración. Si necesitas usarlas, asume que vendrán de variables de entorno o de un módulo
-  seguro, sin imprimirlas.
-- Haz cambios **pequeños y bien justificados**:
-  - Primero, propón un plan en varios pasos.
-  - Después, aplica cambios mínimos (por ejemplo, en una sola función o archivo) y explícame el diff.
-- No reescribas archivos enteros si no es estrictamente necesario; trabaja de forma incremental:
-  añade funciones, refactores locales y tests donde tenga sentido.
+# Data analysis
+python3 scripts/analyze_features.py   # win-rate / feature correlation from data/raw/
+```
 
-## Guía para la lógica de trading (alto nivel, aún por implementar)
-- Caso principal: mercados de 5 minutos en Polymarket.
-- Preguntas que debe responder la lógica:
-  1. ¿Se espera que el precio suba o baje respecto al precio de referencia?
-  2. ¿Qué tipo de orden usar? (por simplicidad inicial, se puede empezar solo con market o solo con limit).
-  3. ¿En qué momento de la ventana de 5 minutos entrar?
-  4. ¿Cuándo recoger beneficios?
-     - Ejemplo: si se compra a 0.35, recoger ganancias con +50%.
-  5. ¿Cuándo dejar correr las ganancias si se ve un "up" o "down" claro? diferencia con el beat Price >50$ por ejemplo, ya sea up o down
-     - Ejemplo: monitorizar segundo a segundo y cerrar si hay una reversión.
-  6. ¿Cuándo cortar pérdidas?
-     - Basado en diferencias con el precio de referencia (umbrales X arriba/abajo).
+## Architecture
 
-- Al implementar, preferimos:
-  - Empezar con una **estrategia simple y explícita**, fácilmente testeable.
-  - Evitar sobre-optimizar o complicar demasiado el tipo de orden al principio.
-  - Dejar bien separado:
-    - la ingesta de datos;
-    - la lógica de decisión;
-    - la capa de ejecución de órdenes en Polymarket.
+Seven-crate Rust workspace. The main bot pipeline is: **Feed → Decision → Risk → Execution**.
+
+### Crates
+
+| Crate | Role |
+|-------|------|
+| `crates/core` | Shared domain types: `RunMode`, `MarketConfig`, `MarketSnapshot`, `Direction`, `Side`, `Signal`, `Position`, `DecisionConfig` |
+| `crates/feed` | Polls Polymarket CLOB + Binance every 250 ms per market; emits `MarketSnapshot` over mpsc channel. Optional Chainlink Data Streams for authoritative strike price; falls back to Binance if credentials absent. |
+| `crates/decision` | `evaluate(snapshot, config) → Enter(Signal) \| Reject(RejectReason)`. Sequential filter chain: timing gates → volume/spread → price-diff or momentum fast-path → liquidity → momentum veto → token price. |
+| `crates/risk` | `should_close(position, snapshot, …) → CloseReason`. Checks: timeout, reversal, liquidity drain, spread blowout, take-profit, trailing stop, stop-loss. Stop-loss is suppressed when the underlying still strongly favors the position. When `|diff| > let_run_diff_usd`, fixed TP is skipped ("let winners run"). |
+| `crates/execution` | `place_entry_order` / `place_close_order`. Simulation: instant fill at quoted price. Live: EIP-712 signed order → POST to Polymarket CLOB. Domain separator differs for CTF vs Neg-Risk CTF markets. |
+| `crates/chainlink` | Chainlink Data Streams v3 BTC/USD client (HMAC-SHA256 auth). Decodes int192 price with 18 decimals. Used by `crates/feed` only. |
+| `crates/ingest` | Standalone binary for raw data collection (Deribit, Binance, Coinalyze → gzip ndjson in `data/raw/`). Not part of the live bot loop. |
+
+### Orchestration (`src/`)
+
+- `src/main.rs` — `tokio::select!` loop: receives `MarketSnapshot` from feed tasks, dispatches to `decision::evaluate` (no open position) or `risk::should_close` (position held), calls execution, tracks `HashMap<market_id, PositionState>`. Emits simulation summary on shutdown.
+- `src/config.rs` — loads `config/markets.toml`, validates fields, builds `DecisionConfig` per market.
+- `src/sim.rs` — `SimAccount`: cash / realized PnL bookkeeping; writes `logs/equity.csv` (per-trade) and `logs/stats.json` (aggregate). Dashboard polls these files.
+
+### Data flow
+
+```
+Feed tasks (one per market, 250 ms)
+    │  MarketSnapshot via mpsc
+    ▼
+Orchestrator (src/main.rs)
+    ├─ no position → decision::evaluate → Enter → execution::place_entry_order → SimAccount
+    └─ has position → risk::should_close → close → execution::place_close_order → SimAccount
+```
+
+### Key non-obvious patterns
+
+- **Rejection dedup**: `RejectReason` only logs on first occurrence or when it changes; same reason repeating is silent.
+- **Binary market complementarity**: when holding YES, the bot checks NO liquidity as a proxy for YES exit demand (and vice versa).
+- **Momentum fast-path**: when `|diff|` is in the "strong" band and momentum amplifies the direction, a lower `min_price_diff_usd_strong` threshold applies.
+- **Window detection**: window start is derived from the market slug timestamp, not from Polymarket's `startDate` (which is the market creation time).
+
+## Configuration
+
+`config/markets.toml` — one `[[markets]]` block per market. Top-level keys: `mode` (`"simulation"` | `"live"`), `simulated_balance_usdc`, `entry_size_usdc`.
+
+**Required env vars for live mode:**
+```
+POLY_API_KEY, POLY_API_SECRET, POLY_PASSPHRASE, POLY_PRIVATE_KEY, POLY_ADDRESS
+```
+**Optional (Chainlink):**
+```
+CHAINLINK_API_KEY, CHAINLINK_API_SECRET, CHAINLINK_BTC_USD_FEED_ID
+```
+
+## Contracts (Foundry)
+
+`contracts/src/PredictionMarket.sol` — virtual UP/DOWN BTC prediction market; operator-controlled rounds; designed for Chainlink Automation integration. Target chain: Arbitrum Sepolia. Requires `ARBITRUM_SEPOLIA_RPC_URL` and `ARBISCAN_API_KEY` in `contracts/.env`.
+
+## Claude Code rules
+
+- **Shell first**: use `ls`, `rg`, `grep`, `cargo` to orient before opening files.
+- **File size**: don't open files >~500 lines without being asked.
+- **Focus**: prioritize `src/` and the specific crate under discussion.
+- **Credentials**: never print or echo values from `.env` or `config/`; treat them as opaque env vars.
+- **Incremental changes**: propose a plan first; apply the minimal diff; don't rewrite whole files.

@@ -1,0 +1,9 @@
+# Foundry
+out/
+cache/
+broadcast/
+
+# Local env
+.env
+.env.*
+!.env.example

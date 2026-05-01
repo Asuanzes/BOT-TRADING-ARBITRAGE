@@ -5,6 +5,15 @@ edition.workspace = true
 
 [dependencies]
 btcbot-core = { path = "../core" }
-tokio   = { workspace = true }
-tracing = { workspace = true }
-anyhow  = { workspace = true }
+tokio      = { workspace = true }
+tracing    = { workspace = true }
+anyhow     = { workspace = true }
+reqwest    = { workspace = true }
+serde_json = { workspace = true }
+chrono     = { workspace = true }
+sha3   = "0.10"
+k256   = { version = "0.13", features = ["ecdsa"] }
+hmac   = "0.12"
+sha2   = "0.10"
+base64 = "0.22"
+hex    = "0.4"

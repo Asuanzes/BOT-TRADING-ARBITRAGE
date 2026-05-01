@@ -5,3 +5,4 @@ edition.workspace = true
 
 [dependencies]
 btcbot-core = { path = "../core" }
+serde       = { workspace = true }

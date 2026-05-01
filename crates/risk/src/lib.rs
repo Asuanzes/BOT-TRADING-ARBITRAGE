@@ -1,6 +1,7 @@
 use btcbot_core::{Position, Side};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
+#[serde(default)]
 pub struct RiskConfig {
     pub take_profit_pct: f64,
     pub stop_loss_pct: f64,
@@ -36,6 +37,19 @@ pub enum CloseReason {
     Reversal,
     Timeout,
     Hold,
+}
+
+impl CloseReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CloseReason::TakeProfit   => "TakeProfit",
+            CloseReason::StopLoss     => "StopLoss",
+            CloseReason::TrailingStop => "TrailingStop",
+            CloseReason::Reversal     => "Reversal",
+            CloseReason::Timeout      => "Timeout",
+            CloseReason::Hold         => "Hold",
+        }
+    }
 }
 
 /// Returns whether and why a position should be closed.
