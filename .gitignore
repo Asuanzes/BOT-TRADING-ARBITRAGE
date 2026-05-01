@@ -8,3 +8,25 @@
 *.pem
 Cargo.lock
 .DS_Store
+
+# Claude Code local config
+.agents/
+.claude/
+SKILL.md
+skills-lock.json
+
+# Python
+.venv/
+get-pip.py
+
+# Runtime data (se regeneran en cada sesión)
+learning_log.json
+results.json
+
+# Archivos temporales accidentales
+break,
+{
+
+# Env alternativo y scripts locales
+.envy
+scripts/
